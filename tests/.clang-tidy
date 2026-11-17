@@ -1,0 +1,10 @@
+---
+# Test-specific overrides: GoogleTest macros trigger these checks by design.
+InheritParentConfig: true
+Checks: >
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -cppcoreguidelines-owning-memory,
+  -cppcoreguidelines-special-member-functions,
+  -modernize-use-equals-delete,
+  -readability-function-cognitive-complexity
+...

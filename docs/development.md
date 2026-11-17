@@ -40,13 +40,40 @@ This document describes the development toolchain, environment and related decis
 - **Native builds on the Raspberry Pi:** pass `-DPISENSE_BUILD_TESTS=OFF` — building
   GoogleTest on a Pi Zero W is slow and requires network access.
 
+### DEV #4: Use clang-format for code style
+- **Decision:** All C++ sources are formatted with clang-format using the repository's
+  `.clang-format`: LLVM base style, Stroustrup braces (own line for function definitions,
+  and for `else`/`catch`; same line for `if`/`for`/`class`), 4-space indent, 100 columns.
+- **Rationale:** Consistent style enforced by a tool instead of reviews; ships with the
+  clang toolchain (DEV #2); supported by all major editors (format on save).
+- **Usage:** CMake targets `format` (rewrites files) and `format-check` (fails on
+  unformatted code). They are only available if clang-format is found at configure time.
+
+### DEV #5: Use clang-tidy for static code analysis
+- **Decision:** C++ sources are analyzed with clang-tidy using the repository's
+  `.clang-tidy`. Enabled check groups: `bugprone`, `clang-analyzer`, `cppcoreguidelines`,
+  `misc`, `modernize`, `performance`, `portability`, `readability`. A few noisy checks are
+  disabled (magic numbers, trailing return types, identifier length, include-cleaner,
+  easily-swappable parameters, non-private members). `tests/.clang-tidy` additionally
+  disables checks triggered by GoogleTest macros.
+- **Rationale:** Catches bugs and outdated or unsafe constructs early; part of the clang
+  toolchain (DEV #2); works on the compilation database produced by CMake (DEV #1).
+- **Usage:**
+  - `tidy` target: analyzes all project sources on demand.
+  - `PISENSE_ENABLE_CLANG_TIDY=ON` (default OFF): runs clang-tidy during compilation of
+    project targets (`pisense`, `pisense_unit_tests`); third-party code is not analyzed.
+  - Findings are warnings, not errors, for now; this may be tightened once the codebase
+    grows.
+
 ## Environment
 
-| Component | Required    | Tested locally        |
-|-----------|-------------|-----------------------|
-| OS (host) | Linux       | Ubuntu (WSL2)         |
-| CMake     | >= 3.16     | 4.2.3                 |
-| clang     | >= 14       | 21.1.8                |
+| Component    | Required | Tested locally |
+|--------------|----------|----------------|
+| OS (host)    | Linux    | Ubuntu (WSL2)  |
+| CMake        | >= 3.16  | 4.2.3          |
+| clang        | >= 14    | 21.1.8         |
+| clang-format | >= 14    | 21.1.8         |
+| clang-tidy   | >= 14    | 21.1.8         |
 
 - **Target:** Raspberry Pi Zero W (ARMv6, Raspberry Pi OS)
 
@@ -70,3 +97,17 @@ cmake --build build
 - Offline: install GoogleTest (e.g. `libgtest-dev` / `googletest` package providing
   `GTestConfig.cmake`), or point CMake at a pre-downloaded source tree with
   `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=<path>`.
+
+## Code formatting
+
+```sh
+cmake --build build --target format        # format all sources in place
+cmake --build build --target format-check  # verify formatting (fails on violations)
+```
+
+## Static analysis
+
+```sh
+cmake --build build --target tidy                         # analyze all project sources
+cmake -S . -B build -DPISENSE_ENABLE_CLANG_TIDY=ON         # or: analyze on every compile
+```
