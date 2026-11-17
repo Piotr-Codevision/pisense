@@ -14,6 +14,24 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 endif()
 
+# Common warning flags shared by all project targets.
+add_library(pisense_warnings INTERFACE)
+target_compile_options(pisense_warnings INTERFACE -Wall -Wextra -Wpedantic)
+
 add_executable(pisense src/main.cpp)
 target_include_directories(pisense PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
-target_compile_options(pisense PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(pisense PRIVATE pisense_warnings)
+
+# Host-based unit tests (DEV #3). Disabled by default when cross-compiling;
+# for native builds on the Raspberry Pi pass -DPISENSE_BUILD_TESTS=OFF.
+if(CMAKE_CROSSCOMPILING)
+    set(_pisense_tests_default OFF)
+else()
+    set(_pisense_tests_default ON)
+endif()
+option(PISENSE_BUILD_TESTS "Build host-based unit tests" ${_pisense_tests_default})
+
+if(PISENSE_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

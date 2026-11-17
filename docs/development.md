@@ -27,6 +27,19 @@ This document describes the development toolchain, environment and related decis
   - a CMake **toolchain file** tying the above together.
 - **Note:** The compiler is selected at configure time, not hardcoded in `CMakeLists.txt`.
 
+### DEV #3: Use GoogleTest for host-based unit testing
+- **Decision:** GoogleTest (with GoogleMock) is the unit-test framework for
+  hardware-independent components, run on the development host via CTest.
+- **Rationale:** Widely used, mature C++ test framework; GoogleMock allows replacing
+  hardware interfaces with mocks so logic can be tested without a Raspberry Pi.
+- **Integration:** An installed GoogleTest (>= 1.11, CMake config package) is used if
+  found; otherwise v1.17.0 is fetched at configure time via CMake `FetchContent`
+  (pinned URL + SHA256). In the fetch case the first configure needs network access.
+- **Scope:** Tests are built when `PISENSE_BUILD_TESTS=ON` (default on host builds,
+  off when cross-compiling). Unit tests live in `tests/unit/`.
+- **Native builds on the Raspberry Pi:** pass `-DPISENSE_BUILD_TESTS=OFF` — building
+  GoogleTest on a Pi Zero W is slow and requires network access.
+
 ## Environment
 
 | Component | Required    | Tested locally        |
@@ -44,3 +57,16 @@ cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++
 cmake --build build
 ./build/pisense
 ```
+
+## Unit tests (host)
+
+```sh
+cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++
+cmake --build build
+(cd build && ctest --output-on-failure)
+```
+
+- To skip building tests, add `-DPISENSE_BUILD_TESTS=OFF` to the configure command.
+- Offline: install GoogleTest (e.g. `libgtest-dev` / `googletest` package providing
+  `GTestConfig.cmake`), or point CMake at a pre-downloaded source tree with
+  `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=<path>`.
