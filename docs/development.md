@@ -151,3 +151,15 @@ PI_HOST=pi@<pi-address> scripts/deploy.sh --run
   `-DRPI_SYSROOT=<dir>`.
 - The scripts use `ssh`/`rsync`; set up key-based login (`ssh-copy-id pi@<pi-address>`)
   or override the SSH command with `PI_SSH`.
+
+## Claude Code hooks
+
+Project hooks are configured in `.claude/settings.json` (scripts in `.claude/hooks/`):
+
+- **PreToolUse / Bash — `guard-rm-rf.py`:** a recursive+forced `rm` requires explicit
+  user confirmation unless every target is non-existent, temporary (`/tmp`, `/var/tmp`,
+  `$TMPDIR`), or untracked by git and created during the current Claude session.
+- **Stop — `format-and-tidy.py`:** C/C++ files changed in `src/`, `inc/`, `tests/` are
+  formatted with clang-format (DEV #4) and analysed with clang-tidy (DEV #5) using
+  `build/compile_commands.json` (override with `PISENSE_TIDY_BUILD_DIR`). clang-tidy
+  findings are fed back to Claude once before it may finish.
