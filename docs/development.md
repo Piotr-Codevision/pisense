@@ -10,21 +10,26 @@ This document describes the development toolchain, environment and related decis
   for cross-compilation, and readily available on Raspberry Pi OS.
 
 ### DEV #2: Use clang for cross-platform compilation
-- **Status:** TBD — host builds use clang; the Raspberry Pi cross-build setup is not yet
-  defined or verified.
+- **Status:** Accepted — cross-build verified on a Raspberry Pi Zero W (Raspbian 11
+  Bullseye) on 2026-11-17.
 - **Decision:** clang/clang++ is the project compiler for both host builds and
-  Raspberry Pi cross-builds.
+  Raspberry Pi cross-builds; Pi binaries are linked with lld against a sysroot copied
+  from the target.
 - **Rationale:** A single clang installation can generate code for other architectures via
-  `--target=` (e.g. `armv6-linux-gnueabihf` for Pi Zero W). Also offers good diagnostics
+  `--target=`, so no separate GCC ARM toolchain is needed. Also offers good diagnostics
   and tooling (clang-format, clang-tidy).
-- **Cross-compilation requirements:** `--target=` alone is not sufficient. A Pi build also needs:
-  - a **sysroot** with the target's headers and libraries (libc, libstdc++, crt files)
-    taken from **Raspberry Pi OS** (ARMv6 hard-float). Stock Debian/Ubuntu `armhf`
-    sysroots are built for ARMv7 and produce binaries that crash on the Pi Zero W
-    with `SIGILL`;
-  - a **linker** capable of targeting ARM, e.g. `lld` (`-fuse-ld=lld`);
-  - explicit CPU flags matching the Pi Zero W (e.g. `-mcpu=arm1176jzf-s -mfpu=vfp -mfloat-abi=hard`);
-  - a CMake **toolchain file** tying the above together.
+- **Cross-compilation setup:**
+  - **Toolchain file** `cmake/toolchain-rpi-zero.cmake`: target `arm-linux-gnueabihf`,
+    CPU flags `-mcpu=arm1176jzf-s -mfpu=vfp -mfloat-abi=hard -marm`, linker
+    `--ld-path=<ld.lld>`, libraries/headers searched only in the sysroot.
+  - **Sysroot** copied from the Pi by `scripts/sync-sysroot.sh` (`/usr/include`,
+    `/usr/lib/arm-linux-gnueabihf`, `/usr/lib/gcc/arm-linux-gnueabihf/<gcc>`, the dynamic
+    loader); absolute symlinks are rewritten to stay inside the sysroot. It must come from
+    **Raspberry Pi OS**: stock Debian/Ubuntu `armhf` sysroots are built for ARMv7 and
+    produce binaries that crash on the Pi Zero W with `SIGILL`.
+  - Binaries link against the Pi's own glibc/libstdc++, so they never require newer
+    versions than the target has.
+  - `scripts/deploy.sh` copies the binary to the Pi and optionally runs it.
 - **Note:** The compiler is selected at configure time, not hardcoded in `CMakeLists.txt`.
 
 ### DEV #3: Use GoogleTest for host-based unit testing
@@ -74,8 +79,24 @@ This document describes the development toolchain, environment and related decis
 | clang        | >= 14    | 21.1.8         |
 | clang-format | >= 14    | 21.1.8         |
 | clang-tidy   | >= 14    | 21.1.8         |
+| lld          | >= 14    | 18.1.8         |
 
-- **Target:** Raspberry Pi Zero W (ARMv6, Raspberry Pi OS)
+### Target (Raspberry Pi Zero W, checked 2026-11-17)
+
+| Item          | Value                                                  |
+|---------------|--------------------------------------------------------|
+| Board         | Raspberry Pi Zero W Rev 1.1                            |
+| OS            | Raspbian GNU/Linux 11 (Bullseye), 32-bit `armhf`       |
+| Kernel        | 6.1.21+ (`armv6l`)                                     |
+| CPU           | ARM1176JZF-S, ARMv6, VFPv2, hard-float ABI             |
+| glibc         | 2.31                                                   |
+| libstdc++     | 6.0.28 (GCC 10.2.1, up to `GLIBCXX_3.4.28`)            |
+| Memory / disk | 429 MiB RAM, 26 GB SD card                             |
+| Libraries     | `libgpiod-dev` 1.6.2 installed                         |
+| Interfaces    | `gpiochip0`; I2C/SPI not enabled in `/boot/config.txt` |
+
+Native builds on the Pi are possible (CMake 3.18.4, GCC 10.2.1) but slow; cross-building
+on the host is the default workflow.
 
 ## Build (host)
 
@@ -111,3 +132,22 @@ cmake --build build --target format-check  # verify formatting (fails on violati
 cmake --build build --target tidy                         # analyze all project sources
 cmake -S . -B build -DPISENSE_ENABLE_CLANG_TIDY=ON         # or: analyze on every compile
 ```
+
+## Cross-build for Raspberry Pi
+
+```sh
+# 1. Copy the sysroot from the Pi (once, and after installing new -dev packages on the Pi)
+PI_HOST=pi@<pi-address> scripts/sync-sysroot.sh          # -> $HOME/rpi-sysroot
+
+# 2. Configure and build (tests are off by default when cross-compiling)
+cmake -S . -B build-rpi -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-rpi-zero.cmake
+cmake --build build-rpi
+
+# 3. Deploy to the Pi and run
+PI_HOST=pi@<pi-address> scripts/deploy.sh --run
+```
+
+- Override the sysroot location with `RPI_SYSROOT=<dir>` (script and CMake) or
+  `-DRPI_SYSROOT=<dir>`.
+- The scripts use `ssh`/`rsync`; set up key-based login (`ssh-copy-id pi@<pi-address>`)
+  or override the SSH command with `PI_SSH`.
