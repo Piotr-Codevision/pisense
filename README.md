@@ -10,3 +10,6 @@ cmake --build build
 ```
 
 See [docs/development.md](docs/development.md) for toolchain and environment details.
+
+To cross-build for the Raspberry Pi Zero W, see
+[docs/development.md](docs/development.md#cross-build-for-raspberry-pi).
