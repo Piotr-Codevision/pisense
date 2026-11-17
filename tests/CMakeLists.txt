@@ -33,6 +33,7 @@ target_link_libraries(pisense_unit_tests PRIVATE
     GTest::gtest_main
     GTest::gmock
 )
+pisense_enable_clang_tidy(pisense_unit_tests)
 
 # gtest_discover_tests runs the test binary at build time, which is impossible
 # when cross-compiling without an emulator; fall back to scanning sources.
