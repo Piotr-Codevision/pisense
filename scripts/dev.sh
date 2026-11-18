@@ -3,8 +3,11 @@
 #
 # Output contract (stable, meant to be read by people and by Claude skills):
 #   [PASS|FAIL] <step> (<secs>s)          one line per step
-#   <= 40 relevant lines + log path       only for a failed step (errors first, then warnings)
-#   RESULT: PASS | RESULT: FAIL (<step>)  last line; exit code 0 / 1 (2 = usage error)
+#   [SKIP] <step> (<reason>)              optional step not run (e.g. tool not installed)
+#   <= 40 relevant lines + log path       only for a failed step (errors first, then
+#                                         warnings and notes)
+#   RESULT: PASS [(skipped: <steps>)]     last line, exit code 0
+#   RESULT: FAIL (<step>)                 last line, exit code 1 (2 = usage error)
 # Full logs: <build dir>/logs/<step>.log
 
 set -u
@@ -17,12 +20,13 @@ SYSROOT="${RPI_SYSROOT:-$HOME/rpi-sysroot}"
 MAX_LINES=40
 CONTEXT_LINES=4 # lines kept after each error match (CMake reasons, GoogleTest values)
 ERROR_RE='error|Error|FAILED|Failed|Failure'
+SKIPPED=()
 
 usage() {
     cat <<'EOF'
 Usage:
   scripts/dev.sh build [host|rpi|coverage]   configure + build (default: host)
-  scripts/dev.sh verify [--coverage]         rebuild, tests, format-check, tidy on the host build
+  scripts/dev.sh verify [--coverage]         rebuild, tests, format-check, shellcheck, tidy
   scripts/dev.sh build-verify [--coverage]   build host, then verify
 EOF
     exit 2
@@ -35,7 +39,8 @@ fail() { # fail <step> <message>
     exit 1
 }
 
-# excerpt <log>: error lines with context first, then warnings, at most MAX_LINES in total;
+# excerpt <log>: error lines with context first, then warnings and notes (shellcheck reports
+# info/style findings as notes), at most MAX_LINES in total;
 # the log tail if nothing matches.
 excerpt() {
     local log="$1" errors warnings n
@@ -43,11 +48,12 @@ excerpt() {
         head -n "$MAX_LINES")"
     n=$(printf '%s' "$errors" | grep -c '' || true)
     if ((n < MAX_LINES)); then
-        warnings="$(grep -E -A 2 --no-group-separator 'warning:' "$log" | head -n $((MAX_LINES - n)))"
+        warnings="$(grep -E -A 2 --no-group-separator 'warning:|note:' "$log" | head -n $((MAX_LINES - n)))"
         errors="$(printf '%s\n%s' "$errors" "$warnings" | sed '/^$/d')"
     fi
     [[ -n $errors ]] || errors="$(tail -n "$MAX_LINES" "$log")"
-    printf '%s\n' "$errors"
+    # Drop make's recursive "*** ... Error N" lines and repeated lines (overlapping context).
+    printf '%s\n' "$errors" | grep -vE '^g?make(\[[0-9]+\])?: \*\*\*' | awk '!seen[$0]++'
 }
 
 # run_step <step> <log dir> <command...>: runs the command with output to a log file,
@@ -74,18 +80,29 @@ run_step() {
     exit 1
 }
 
-# require_tool <step> <cache variable> <tool name>: fails clearly when CMake did not find
-# an optional tool, instead of reporting a missing target as a code problem.
-require_tool() {
+# has_tool <cache variable>: true when CMake found the tool in the host build.
+has_tool() {
     local path
-    path="$(sed -n "s/^$2:FILEPATH=//p" "$HOST_DIR/CMakeCache.txt")"
-    [[ -n $path && $path != *-NOTFOUND ]] ||
+    path="$(sed -n "s/^$1:FILEPATH=//p" "$HOST_DIR/CMakeCache.txt")"
+    [[ -n $path && $path != *-NOTFOUND ]]
+}
+
+# require_tool <step> <cache variable> <tool name>: fails clearly when CMake did not find
+# a required tool, instead of reporting a missing target as a code problem.
+require_tool() {
+    has_tool "$2" ||
         fail "$1" "$3 not found by CMake; install it (see docs/development.md) and re-run: scripts/dev.sh build"
 }
 
-run_tests() {
-    cd "$HOST_DIR" && ctest --output-on-failure
+# skip_step <step> <reason>: reports an optional step that was not run.
+skip_step() {
+    echo "[SKIP] $1 ($2)"
+    SKIPPED+=("$1")
 }
+
+run_tests() (
+    cd "$HOST_DIR" && ctest --output-on-failure
+)
 
 build_host() {
     run_step configure "$HOST_DIR/logs" cmake -S "$ROOT" -B "$HOST_DIR" -DCMAKE_CXX_COMPILER=clang++
@@ -121,6 +138,12 @@ verify() {
     grep -E 'tests passed' "$HOST_DIR/logs/test.log" | sed 's/^/  /'
     require_tool format-check CLANG_FORMAT_EXE clang-format
     run_step format-check "$HOST_DIR/logs" cmake --build "$HOST_DIR" --target format-check
+    # Optional: shell scripts are not part of the product build.
+    if has_tool SHELLCHECK_EXE; then
+        run_step shellcheck "$HOST_DIR/logs" cmake --build "$HOST_DIR" --target shellcheck
+    else
+        skip_step shellcheck "not installed"
+    fi
     require_tool tidy CLANG_TIDY_EXE clang-tidy
     run_step tidy "$HOST_DIR/logs" cmake --build "$HOST_DIR" --target tidy
     if [[ $1 -eq 1 ]]; then
@@ -168,4 +191,8 @@ case "$cmd" in
         verify "$with_coverage" 1
         ;;
 esac
-echo "RESULT: PASS"
+if ((${#SKIPPED[@]})); then
+    echo "RESULT: PASS (skipped: ${SKIPPED[*]})"
+else
+    echo "RESULT: PASS"
+fi
