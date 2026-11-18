@@ -148,3 +148,26 @@ if(CLANG_TIDY_EXE)
 else()
     message(STATUS "clang-tidy not found: tidy target disabled")
 endif()
+
+# Shell script linting (DEV #7). Optional target, enabled only if shellcheck is found.
+find_program(SHELLCHECK_EXE NAMES shellcheck)
+
+if(SHELLCHECK_EXE)
+    file(GLOB_RECURSE PISENSE_SHELL_SOURCES CONFIGURE_DEPENDS
+        ${PROJECT_SOURCE_DIR}/scripts/*.sh ${PROJECT_SOURCE_DIR}/cmake/*.sh
+        ${PROJECT_SOURCE_DIR}/.claude/*.sh)
+
+    if(PISENSE_SHELL_SOURCES)
+        add_custom_target(shellcheck
+            COMMAND ${SHELLCHECK_EXE} -f gcc ${PISENSE_SHELL_SOURCES}
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+            COMMENT "Checking shell scripts with shellcheck"
+            VERBATIM)
+    else()
+        add_custom_target(shellcheck
+            COMMAND ${CMAKE_COMMAND} -E echo "No shell scripts to check"
+            VERBATIM)
+    endif()
+else()
+    message(STATUS "shellcheck not found: shellcheck target disabled")
+endif()

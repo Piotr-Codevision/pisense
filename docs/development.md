@@ -138,6 +138,7 @@ This document describes the development toolchain, environment and related decis
 | lld                           | >= 14         | 18.1.8         |
 | llvm-cov / llvm-profdata      | same as clang | 21.1.8         |
 | file (for `dev.sh build rpi`) | any           | 5.46           |
+| shellcheck (optional)         | any           | 0.11.0         |
 
 ### Target (Raspberry Pi Zero W, checked 2026-11-17)
 
@@ -158,18 +159,22 @@ on the host is the default workflow.
 
 ## Quick checks (`scripts/dev.sh`)
 
-One command per repeatable procedure (DEV #7), with compact output: one `[PASS|FAIL]` line
-per step, a short error excerpt for a failed step and a final `RESULT: PASS|FAIL (<step>)`
-line (exit code 0/1). Full logs are in `<build dir>/logs/<step>.log`.
+One command per repeatable procedure (DEV #7), with compact output: one `[PASS|FAIL] <step>
+(<secs>s)` line per step (`[SKIP] <step> (<reason>)` for an optional step that was not run),
+a short error excerpt for a failed step and a final `RESULT: PASS [(skipped: <steps>)]` or
+`RESULT: FAIL (<step>)` line (exit code 0/1). Full logs are in `<build dir>/logs/<step>.log`.
 
 ```sh
 scripts/dev.sh build [host|rpi|coverage]   # configure + build (default: host)
-scripts/dev.sh verify [--coverage]         # rebuild, ctest, format-check, tidy (+ coverage)
+scripts/dev.sh verify [--coverage]         # rebuild, ctest, format-check, shellcheck, tidy (+ coverage)
 scripts/dev.sh build-verify [--coverage]   # build host, then verify
 ```
 
 - `verify` needs an existing host build and fails on any clang-tidy finding; a missing
   clang-format/clang-tidy is reported as such, not as a code failure.
+- `verify` runs the `shellcheck` target (see Static analysis) when shellcheck is installed;
+  any finding, including info/style notes, fails the step. Without shellcheck it prints
+  `[SKIP] shellcheck (not installed)` and ends with `RESULT: PASS (skipped: shellcheck)`.
 - The script owns `build/`, `build-rpi/` and `build-coverage/` and always configures them
   with the documented options (e.g. clang++); use another directory for custom configs.
 - `build rpi` needs the sysroot (see below); it never syncs it or deploys.
@@ -221,6 +226,13 @@ cmake --build build --target format-check  # verify formatting (fails on violati
 ```sh
 cmake --build build --target tidy                         # analyze all project sources
 cmake -S . -B build -DPISENSE_ENABLE_CLANG_TIDY=ON         # or: analyze on every compile
+```
+
+Shell scripts (`scripts/`, `cmake/`, `.claude/`, any depth, `*.sh`) are linted with
+shellcheck when it is installed (optional; the target is not defined otherwise):
+
+```sh
+cmake --build build --target shellcheck
 ```
 
 ## Cross-build for Raspberry Pi
