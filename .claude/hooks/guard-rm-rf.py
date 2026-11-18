@@ -1,106 +1,43 @@
 #!/usr/bin/env python3
-"""Claude Code PreToolUse hook (Bash): require user confirmation for `rm -rf`.
+"""Claude Code PreToolUse hook (Bash): guard recursive `rm` against deleting content
+outside the project.
 
-A recursive+forced `rm` is let through to the normal permission flow only when every
-target is:
-  * non-existent, or
+Every target of `rm -r` (`-R`, `--recursive`; with or without `-f`) must be:
+  * inside the project ($CLAUDE_PROJECT_DIR), but not the project root or `.git`, or
   * inside a temporary directory (/tmp, /var/tmp, $TMPDIR), or
-  * created during the current Claude session (it and everything below it have a file
-    birth time later than the session transcript).
+  * non-existent.
+Otherwise the hook answers "ask", so the user has to confirm the command. Targets that
+cannot be resolved statically (unknown variables, command substitution, `xargs`,
+`find -exec`) also ask. The hook never approves anything itself and asks on any error.
 
-Anything else -- including targets that cannot be resolved statically (variables, globs,
-command substitution, xargs, find -exec) -- makes the hook answer "ask", so the user must
-confirm the command explicitly. The hook never auto-approves a command, and any internal
-error also results in "ask".
+Pure path checks: no subprocesses, no directory walks.
 """
 
 import json
 import os
 import shlex
-import subprocess
 import sys
 
-TEMP_ROOTS = ["/tmp", "/var/tmp"]
 WRAPPERS = {"sudo", "env", "command", "builtin", "nice", "nohup", "time", "exec"}
 SEPARATORS = {";", "&&", "||", "|", "&", "|&", "(", ")"}
-UNRESOLVABLE_CHARS = set("$`*?[]{}")
+GLOB_CHARS = "*?["
 
 
-def respond_ask(reason):
-    json.dump(
-        {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "ask",
-                "permissionDecisionReason": reason,
-            }
-        },
-        sys.stdout,
-    )
+def ask(reason):
+    json.dump({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "ask",
+        "permissionDecisionReason": reason,
+    }}, sys.stdout)
     sys.exit(0)
 
 
-def temp_roots():
-    roots = list(TEMP_ROOTS)
-    tmpdir = os.environ.get("TMPDIR")
-    if tmpdir and os.path.realpath(tmpdir) != "/":
-        roots.append(os.path.realpath(tmpdir))
-    return roots
+def is_within(path, root):
+    return path == root or path.startswith(root.rstrip("/") + "/")
 
 
-def birth_time(path):
-    """File birth time in seconds, or None if unknown."""
-    try:
-        out = subprocess.run(
-            ["stat", "-c", "%W", path], capture_output=True, text=True, check=True
-        ).stdout.strip()
-        value = int(out)
-        return value if value > 0 else None
-    except (subprocess.CalledProcessError, ValueError, OSError):
-        return None
-
-
-def iter_tree(path):
-    """Yield path and every entry below it, without following symlinks."""
-    yield path
-    if os.path.isdir(path) and not os.path.islink(path):
-        for root, dirs, files in os.walk(path, followlinks=False):
-            for name in dirs + files:
-                yield os.path.join(root, name)
-
-
-def created_in_session(path, session_start, batch_size=512):
-    """True if path and all entries below it were born at/after session_start.
-
-    Uses coreutils `stat` (statx-based) for birth times; GNU find's %B is not reliable.
-    `stat` does not follow symlinks, so a link's own birth time is checked.
-    """
-
-    def batch_ok(batch):
-        result = subprocess.run(
-            ["stat", "-c", "%W", "--", *batch], capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            return False
-        for value in result.stdout.split():
-            born = int(value)
-            if born <= 0 or born < session_start:
-                return False
-        return True
-
-    batch = []
-    for entry in iter_tree(path):
-        batch.append(entry)
-        if len(batch) >= batch_size:
-            if not batch_ok(batch):
-                return False
-            batch = []
-    return batch_ok(batch) if batch else True
-
-
-def split_segments(command):
-    """Split a shell command into simple-command token lists."""
-    segments = []
+def segments(command):
+    """Yield the token list of every simple command in a shell command string."""
     for line in command.splitlines():
         lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
@@ -109,145 +46,111 @@ def split_segments(command):
         for token in lexer:
             if token in SEPARATORS:
                 if current:
-                    segments.append(current)
+                    yield current
                 current = []
             else:
                 current.append(token)
         if current:
-            segments.append(current)
-    return segments
+            yield current
 
 
 def parse_rm(args):
-    """Return (recursive, force, operands) for the arguments following `rm`."""
-    recursive = force = False
-    operands = []
-    end_of_options = False
+    """Return (recursive, operands) for the arguments of `rm`."""
+    recursive, operands, options_done = False, [], False
     for arg in args:
-        if not end_of_options and arg == "--":
-            end_of_options = True
-        elif not end_of_options and arg.startswith("--"):
-            recursive |= arg == "--recursive"
-            force |= arg == "--force"
-        elif not end_of_options and arg.startswith("-") and len(arg) > 1:
-            recursive |= "r" in arg or "R" in arg
-            force |= "f" in arg
-        else:
+        if options_done or arg == "-" or not arg.startswith("-"):
             operands.append(arg)
-    return recursive, force, operands
+        elif arg == "--":
+            options_done = True
+        elif arg.startswith("--"):
+            recursive |= arg == "--recursive"
+        else:
+            recursive |= "r" in arg or "R" in arg
+    return recursive, operands
 
 
 def resolve(operand, cwd):
-    """Absolute path of operand, or None if it cannot be resolved statically."""
-    if any(c in UNRESOLVABLE_CHARS for c in operand):
+    """Absolute, symlink-safe path for operand; None if it cannot be resolved."""
+    path = os.path.expandvars(os.path.expanduser(operand))
+    if "$" in path or "`" in path or path.startswith("~"):
         return None
-    if operand == "~" or operand.startswith("~/"):
-        operand = os.path.expanduser(operand)
-    elif operand.startswith("~"):
-        return None
-    if not os.path.isabs(operand):
+    if not os.path.isabs(path):
         if cwd is None:
             return None
-        operand = os.path.join(cwd, operand)
-    operand = os.path.normpath(operand)
-    # Resolve symlinks in the parent only: `rm -rf link` removes the link itself.
-    parent, name = os.path.split(operand)
-    return os.path.join(os.path.realpath(parent), name) if name else operand
+        path = os.path.join(cwd, path)
+    if path.endswith("/"):
+        return os.path.realpath(path)  # trailing slash follows a symlink
+    parent, name = os.path.split(os.path.abspath(path))
+    return os.path.join(os.path.realpath(parent), name)  # `rm link` removes the link only
 
 
-def contains_git_tracked(path):
-    """True if path is, or contains, a file tracked by git.
+def check(operand, cwd, project, temp_roots):
+    """Return None if the target is acceptable, else a description of the problem."""
+    glob_at = next((i for i, c in enumerate(operand) if c in GLOB_CHARS), None)
+    if glob_at is not None:
+        # Judge a glob by the directory its matches live in.
+        directory, pattern = os.path.split(operand[:glob_at])
+        target = resolve(directory or ".", cwd)
+        dotfiles = (pattern or operand[glob_at:]).startswith(".")
+    else:
+        target = resolve(operand, cwd)
+    if target is None:
+        return f"{operand} (cannot be resolved before running)"
 
-    Birth time alone is not proof of authorship: `git checkout`/`git switch` and many
-    editors recreate files, giving user-authored content a fresh birth time.
-    """
-    base = path if os.path.isdir(path) and not os.path.islink(path) else os.path.dirname(path)
-    inside = subprocess.run(
-        ["git", "-C", base, "rev-parse", "--is-inside-work-tree"],
-        capture_output=True, text=True,
-    )
-    if inside.returncode != 0 or inside.stdout.strip() != "true":
-        # Not in a work tree: still protect a repository's own .git directory.
-        return os.path.basename(path) == ".git"
-    if os.path.basename(path) == ".git":
-        return True
-    tracked = subprocess.run(
-        ["git", "-C", base, "ls-files", "-z", "--", path],
-        capture_output=True, text=True,
-    )
-    return tracked.returncode != 0 or bool(tracked.stdout)
-
-
-def check_target(path, session_start):
-    """Return None if deleting path is fine, otherwise a reason string."""
-    if not os.path.lexists(path):
-        return None
-    for root in temp_roots():
-        if path.startswith(root.rstrip("/") + "/"):
+    if glob_at is not None:
+        in_project = project and is_within(target, project) and not (
+            is_within(target, os.path.join(project, ".git"))
+            or (target == project and dotfiles))
+        in_temp = any(is_within(target, root) for root in temp_roots)
+    else:
+        if not os.path.lexists(target):
             return None
-    if contains_git_tracked(path):
-        return "contains files tracked by git"
-    if session_start is not None and created_in_session(path, session_start):
+        in_project = project and is_within(target, project) and target != project \
+            and not is_within(target, os.path.join(project, ".git"))
+        in_temp = any(is_within(target, root) and target != root for root in temp_roots)
+
+    if in_project or in_temp:
         return None
-    return "not temporary and not created in this Claude session"
+    return f"{target} (outside the project and not temporary)"
 
 
 def main():
     payload = json.load(sys.stdin)
-    if payload.get("tool_name") != "Bash":
-        return
     command = payload.get("tool_input", {}).get("command", "")
-    if "rm" not in command:
+    if payload.get("tool_name") != "Bash" or "rm" not in command:
         return
 
     cwd = payload.get("cwd") or os.getcwd()
-    transcript = payload.get("transcript_path")
-    session_start = birth_time(transcript) if transcript and os.path.exists(transcript) else None
+    project_env = os.environ.get("CLAUDE_PROJECT_DIR")
+    project = os.path.realpath(project_env) if project_env else None
+    temp_roots = [os.path.realpath(p) for p in ("/tmp", "/var/tmp", os.environ.get("TMPDIR"))
+                  if p and os.path.realpath(p) != "/"]
 
     problems = []
-    for tokens in split_segments(command):
-        # Track `cd` so relative operands resolve against the right directory.
+    for tokens in segments(command):
         if tokens[0] == "cd":
-            if len(tokens) == 1:
-                cwd = os.path.expanduser("~")
-            else:
-                cwd = resolve(tokens[1], cwd)
+            cwd = os.path.expanduser("~") if len(tokens) == 1 else resolve(tokens[1] + "/", cwd)
             continue
-
         for i, token in enumerate(tokens):
             if os.path.basename(token) != "rm":
                 continue
-            # Only treat it as a command if everything before it is a wrapper/assignment.
             prefix = tokens[:i]
+            recursive, operands = parse_rm(tokens[i + 1:])
+            if not recursive:
+                break
             if any(t in ("xargs", "-exec", "-execdir", "-ok") for t in prefix):
-                recursive, force, _ = parse_rm(tokens[i + 1:])
-                if recursive and force:
-                    problems.append(f"{' '.join(tokens)} (targets come from another command)")
-                break
-            if not all(t in WRAPPERS or "=" in t or t.startswith("-") for t in prefix):
-                continue
-            recursive, force, operands = parse_rm(tokens[i + 1:])
-            if not (recursive and force):
-                break
-            for operand in operands:
-                path = resolve(operand, cwd)
-                if path is None:
-                    problems.append(f"{operand} (cannot be resolved before running)")
-                    continue
-                reason = check_target(path, session_start)
-                if reason:
-                    problems.append(f"{path} ({reason})")
+                problems.append(f"{' '.join(tokens)} (targets come from another command)")
+            elif all(t in WRAPPERS or "=" in t or t.startswith("-") for t in prefix):
+                problems += filter(None, (check(op, cwd, project, temp_roots) for op in operands))
             break
 
     if problems:
-        respond_ask(
-            "rm -rf guard: confirm deletion of path(s) not created by Claude in this "
-            "session and not temporary:\n  - " + "\n  - ".join(problems)
-        )
+        ask("rm guard: confirm recursive deletion outside the project / temp dirs:\n  - "
+            + "\n  - ".join(problems))
 
 
 if __name__ == "__main__":
     try:
         main()
-    except Exception as exc:  # fail closed: ask instead of silently allowing
-        respond_ask(f"rm -rf guard could not analyse the command ({exc}); please confirm.")
+    except Exception as exc:  # fail closed
+        ask(f"rm guard could not analyse the command ({exc}); please confirm.")

@@ -156,9 +156,12 @@ PI_HOST=pi@<pi-address> scripts/deploy.sh --run
 
 Project hooks are configured in `.claude/settings.json` (scripts in `.claude/hooks/`):
 
-- **PreToolUse / Bash — `guard-rm-rf.py`:** a recursive+forced `rm` requires explicit
-  user confirmation unless every target is non-existent, temporary (`/tmp`, `/var/tmp`,
-  `$TMPDIR`), or untracked by git and created during the current Claude session.
+- **PreToolUse / Bash — `guard-rm-rf.py`:** a recursive `rm` (`-r`/`-R`/`--recursive`,
+  with or without `-f`) requires explicit user confirmation unless every target is inside
+  the project (except the project root and `.git`), inside a temporary directory (`/tmp`,
+  `/var/tmp`, `$TMPDIR`), or non-existent. Targets that cannot be resolved before running
+  (unknown variables, command substitution, `xargs`, `find -exec`) also ask. Pure path
+  checks; symlinks are resolved so a link cannot escape the project.
 - **Stop — `format-and-tidy.py`:** C/C++ files changed in `src/`, `inc/`, `tests/` are
   formatted with clang-format (DEV #4) and analysed with clang-tidy (DEV #5) using
   `build/compile_commands.json` (override with `PISENSE_TIDY_BUILD_DIR`). clang-tidy

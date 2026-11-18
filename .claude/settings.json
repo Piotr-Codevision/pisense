@@ -7,8 +7,8 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-rm-rf.py\"",
-            "timeout": 30,
-            "statusMessage": "Checking rm -rf targets"
+            "timeout": 10,
+            "statusMessage": "Checking rm -r targets"
           }
         ]
       }
