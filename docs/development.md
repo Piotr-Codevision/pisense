@@ -270,7 +270,10 @@ Project hooks are configured in `.claude/settings.json` (scripts in `.claude/hoo
   the project (except the project root and `.git`), inside a temporary directory (`/tmp`,
   `/var/tmp`, `$TMPDIR`), or non-existent. Targets that cannot be resolved before running
   (unknown variables, command substitution, `xargs`, `find -exec`) also ask. Pure path
-  checks; symlinks are resolved so a link cannot escape the project.
+  checks; symlinks are resolved so a link cannot escape the project. Only a standalone
+  `rm` word is considered (not `format`, `confirm`, ...). Heredoc bodies are skipped as
+  data unless fed to a shell (`bash`, `sh`, `ssh`, `sudo`, ...). A line that cannot be
+  parsed (e.g. an unbalanced quote) asks only if it contains `rm`, quoting that line.
 - **Stop — `format-and-tidy.py`:** C/C++ files changed in `src/`, `inc/`, `tests/` are
   formatted with clang-format (DEV #4) and analysed with clang-tidy (DEV #5) using
   `build/compile_commands.json` (override with `PISENSE_TIDY_BUILD_DIR`). clang-tidy
