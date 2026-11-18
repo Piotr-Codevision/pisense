@@ -126,6 +126,35 @@ This document describes the development toolchain, environment and related decis
   (which needs an existing sysroot). Sysroot sync and deployment stay manual, because they
   reach the Pi and need credentials.
 
+### DEV #8: Script the GitHub pull-request flow (`scripts/git-flow.sh`, user-invoked skills)
+- **Decision:** `scripts/git-flow.sh pr` commits on a feature branch, pushes and opens (or
+  reuses) a pull request; `scripts/git-flow.sh merged` fast-forwards the default branch and
+  deletes the merged feature branch locally and remotely. The Claude Code skills
+  `/commit-push-pr` and `/pr-merged` wrap it and run only when the user invokes them
+  (`disable-model-invocation: true`), because committing and pushing need an explicit
+  request.
+- **Rationale:** Token savings in the commit step itself are small (about 10–20%): the
+  commit message and PR description must still be written by the session that knows the
+  change, so that skill runs in the main conversation, not in a forked cheaper model. The
+  gain is reliability: fixed mechanics (HTTPS push with GitHub CLI credentials, PR creation
+  through the REST API, squash-merge aware branch deletion) and pre-commit checks that
+  previously needed follow-up commits (e.g. files hidden by `.gitignore`). The larger
+  saving is post-merge: syncing the default branch and deleting the branch become one
+  command instead of two conversation turns, and each turn re-reads the whole conversation.
+  Alternatives considered: instruction-only skills (no change compared to remembered
+  commands), GitHub CLI `gh pr create`/`gh pr merge` (`gh pr edit` fails with a GraphQL
+  deprecation error in the tested setup; the REST API works).
+- **No personal or machine data in the repository:** the repository and its URL are read
+  from the `origin` remote at runtime; nothing about users, hosts or credentials is stored.
+  Before committing, `git-flow.sh pr` scans the added lines of the staged diff, the commit
+  message and the PR description for home paths, IPv4 addresses, e-mail addresses (except
+  `noreply@`), credential variables, private-key headers and GitHub tokens, and refuses with
+  `RESULT: FAIL (sensitive-data)`, listing only file, line and kind (never the matched
+  text); `--allow-sensitive` overrides after review. Files such as `.env`, `*.pem` or
+  `settings.local.json` are refused outright.
+- **Scope:** GitHub remotes only; requires the GitHub CLI (`gh`) to be logged in. The
+  attribution lines of commits and PRs are written by the session, not hard-coded.
+
 ## Environment
 
 | Component                     | Required      | Tested locally |
@@ -260,6 +289,16 @@ Project skills in `.claude/skills/` (DEV #7) wrap `scripts/dev.sh`: `/build [hos
 `/verify [--coverage]` and `/build-verify [--coverage]`. Claude also picks them
 automatically for build/test requests. Each runs in a forked Haiku subagent
 (`context: fork`, `model: haiku`) and returns only the summary to the main conversation.
+
+`/commit-push-pr [branch-name] [description]` and `/pr-merged [branch-name]` (DEV #8) wrap
+`scripts/git-flow.sh`. They run only when invoked by the user. `/commit-push-pr` runs in the
+main conversation (it writes the commit message and PR description), runs `/build-verify`
+first when code changed, and stops on possible personal or secret data.
+
+```sh
+scripts/git-flow.sh pr --message-file <file> --body-file <file> [--branch <name>] [--add <path>]...
+scripts/git-flow.sh merged [<branch>]
+```
 
 ## Claude Code hooks
 

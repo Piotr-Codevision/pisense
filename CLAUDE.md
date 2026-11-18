@@ -34,7 +34,8 @@ PiSense is an educational IoT environmental monitoring project built in modern C
 - Do not commit, push, or modify Git history unless explicitly requested.
 - Update documentation when functionality or design decisions change.
 - Record architectural or tooling decisions as a DEV #N entry in `docs/development.md` (decision, rationale, alternatives, scope).
-- Git: one branch per change; commit subjects use `Prefix: Description` (e.g. `Build:`, `Chore:`, `Docs:`).
+- Git: one branch per change; commit subjects use `Prefix: Description` (e.g. `Build:`, `Chore:`, `Docs:`). When asked, deliver with `/commit-push-pr` and sync after a merge with `/pr-merged`.
+- Never commit personal or machine-specific data (local paths, IP addresses, user names, e-mail addresses, credentials).
 
 ## Current Priority
 Focus on building a working MVP first. Avoid premature optimization and unnecessary complexity.
