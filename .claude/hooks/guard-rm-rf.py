@@ -10,17 +10,26 @@ Otherwise the hook answers "ask", so the user has to confirm the command. Target
 cannot be resolved statically (unknown variables, command substitution, `xargs`,
 `find -exec`) also ask. The hook never approves anything itself and asks on any error.
 
-Pure path checks: no subprocesses, no directory walks.
+Pure path checks: no subprocesses, no directory walks. Heredoc bodies are data and are
+skipped, unless they are fed to a shell (bash, sh, ssh, ...). A line that cannot be parsed
+asks only if it contains a standalone `rm`, and the prompt quotes that line.
 """
 
 import json
 import os
+import re
 import shlex
 import sys
 
 WRAPPERS = {"sudo", "env", "command", "builtin", "nice", "nohup", "time", "exec"}
 SEPARATORS = {";", "&&", "||", "|", "&", "|&", "(", ")"}
 GLOB_CHARS = "*?["
+# `rm` as a command word: not part of `format`, `confirm`, `guard-rm-rf.py`, ...
+RM_WORD = re.compile(r"(?<![\w.-])rm(?![\w.-])")
+HEREDOC = re.compile(r"(?<!<)<<(-?)\s*(['\"]?)([A-Za-z_][\w]*)\2")
+# Programs whose heredoc input is executed as shell commands.
+SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "ssh", "sshpass", "sudo", "su", "env",
+          "xargs", "eval", "source", "."}
 
 
 def ask(reason):
@@ -36,22 +45,57 @@ def is_within(path, root):
     return path == root or path.startswith(root.rstrip("/") + "/")
 
 
-def segments(command):
-    """Yield the token list of every simple command in a shell command string."""
-    for line in command.splitlines():
+def has_heredoc_operator(line):
+    """True if `<<` appears unquoted; a line that cannot be parsed is not trusted as one."""
+    try:
         lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
-        lexer.commenters = "#"
-        current = []
-        for token in lexer:
-            if token in SEPARATORS:
-                if current:
-                    yield current
-                current = []
-            else:
-                current.append(token)
-        if current:
-            yield current
+        return "<<" in lexer
+    except ValueError:
+        return False
+
+
+def command_lines(command):
+    """Yield the lines of a command that the shell executes, skipping heredoc bodies that
+    are data for a non-shell program (e.g. `python3 - <<'EOF'`)."""
+    lines = command.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        yield line
+        heredocs = HEREDOC.findall(line) if has_heredoc_operator(line) else []
+        if not heredocs:
+            continue
+        words = {os.path.basename(w) for w in line.split("<<", 1)[0].split()}
+        skip_body = not words & SHELLS
+        for strip_tabs, _quote, word in heredocs:
+            while i < len(lines):
+                body = lines[i].lstrip("\t") if strip_tabs else lines[i]
+                i += 1
+                if body == word:
+                    break
+                if not skip_body:
+                    yield lines[i - 1]
+
+
+def segments(line):
+    """Return the token lists of the simple commands in one line; raises ValueError if the
+    line cannot be parsed (e.g. an unbalanced quote)."""
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    result, current = [], []
+    for token in lexer:
+        if token in SEPARATORS:
+            if current:
+                result.append(current)
+            current = []
+        else:
+            current.append(token)
+    if current:
+        result.append(current)
+    return result
 
 
 def parse_rm(args):
@@ -111,13 +155,26 @@ def check(operand, cwd, project, temp_roots):
 
     if in_project or in_temp:
         return None
+    if project and (target == project or is_within(target, os.path.join(project, ".git"))):
+        return f"{target} (project root or .git)"
     return f"{target} (outside the project and not temporary)"
+
+
+def parsed(lines, problems):
+    """Yield the simple commands of all lines; an unparsable line is a problem only if it
+    contains a standalone `rm`."""
+    for line in lines:
+        try:
+            yield from segments(line)
+        except ValueError as exc:
+            if RM_WORD.search(line):
+                problems.append(f"line could not be parsed ({exc}): {line.strip()[:200]}")
 
 
 def main():
     payload = json.load(sys.stdin)
     command = payload.get("tool_input", {}).get("command", "")
-    if payload.get("tool_name") != "Bash" or "rm" not in command:
+    if payload.get("tool_name") != "Bash" or not RM_WORD.search(command):
         return
 
     cwd = payload.get("cwd") or os.getcwd()
@@ -127,7 +184,7 @@ def main():
                   if p and os.path.realpath(p) != "/"]
 
     problems = []
-    for tokens in segments(command):
+    for tokens in parsed(command_lines(command), problems):
         if tokens[0] == "cd":
             cwd = os.path.expanduser("~") if len(tokens) == 1 else resolve(tokens[1] + "/", cwd)
             continue
