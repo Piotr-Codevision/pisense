@@ -95,6 +95,37 @@ This document describes the development toolchain, environment and related decis
 - **Thresholds:** none for now (report only, MVP). A minimum (e.g. line coverage) may
   be enforced later.
 
+### DEV #7: Wrap repeatable procedures in `scripts/dev.sh` and Claude Code skills
+- **Decision:** Build and verification procedures (configure, build, ctest, format-check,
+  tidy, coverage, cross-build) are wrapped in one script, `scripts/dev.sh`, with a fixed
+  compact output contract. Three thin Claude Code skills (`build`, `verify`,
+  `build-verify`) call it in a forked Haiku subagent.
+- **Rationale:** One command replaces 4–10 ad-hoc tool calls. Project specifics (clang++,
+  separate build directories, ctest without `--test-dir` for CMake 3.16, clang-tidy
+  findings treated as failures) live in the script, not in the model's memory. Raw tool
+  logs stay on disk, and only a few summary lines reach the model, so cheaper models run
+  the procedures reliably. Humans and CI can use the same script.
+  Alternatives considered:
+  - skills with instructions only (same verbose logs, room for deviation);
+  - CMakePresets (requires CMake ≥ 3.19, above the 3.16 minimum);
+  - a Makefile wrapper (a second front-end with no output reduction).
+- **Measured (S1: "build and run all checks", clean tree, warm build, 2026-11-18):**
+
+  | Session model | Variant | Turns | Output tok | Context tok (cache r+w) | Duration |
+  |---|---|---|---|---|---|
+  | Haiku | no skill | 10 | 2,606 | 282k | 44 s |
+  | Haiku | `build-verify` skill | 2 | 325 | 58k | 33 s |
+  | Sonnet | no skill | 6 | 1,208 | 185k | 40 s |
+  | Sonnet | `build-verify` skill | 2 | 209 | 57k | 34 s |
+
+  Every run gave the correct verdict. Without the skill, Haiku also wrote an unrequested
+  log file. Dollar cost depends heavily on prompt-cache state: with cold caches in both
+  variants it was 13–16% lower with the skill. The token and turn reductions above are the
+  stable effect.
+- **Scope:** host build, tests, format-check, tidy, coverage, and the rpi cross-build
+  (which needs an existing sysroot). Sysroot sync and deployment stay manual, because they
+  reach the Pi and need credentials.
+
 ## Environment
 
 | Component                | Required      | Tested locally |
@@ -123,6 +154,22 @@ This document describes the development toolchain, environment and related decis
 
 Native builds on the Pi are possible (CMake 3.18.4, GCC 10.2.1) but slow; cross-building
 on the host is the default workflow.
+
+## Quick checks (`scripts/dev.sh`)
+
+One command per repeatable procedure (DEV #7), with compact output: one `[PASS|FAIL]` line
+per step, a short error excerpt for a failed step and a final `RESULT: PASS|FAIL (<step>)`
+line (exit code 0/1). Full logs are in `<build dir>/logs/<step>.log`.
+
+```sh
+scripts/dev.sh build [host|rpi|coverage]   # configure + build (default: host)
+scripts/dev.sh verify [--coverage]         # rebuild, ctest, format-check, tidy (+ coverage)
+scripts/dev.sh build-verify [--coverage]   # build host, then verify
+```
+
+- `verify` needs an existing host build and fails on any clang-tidy finding.
+- `build rpi` needs the sysroot (see below); it never syncs it or deploys.
+- The manual commands below remain valid; the script only wraps them.
 
 ## Build (host)
 
@@ -190,6 +237,13 @@ PI_HOST=pi@<pi-address> scripts/deploy.sh --run
   `-DRPI_SYSROOT=<dir>`.
 - The scripts use `ssh`/`rsync`; set up key-based login (`ssh-copy-id pi@<pi-address>`)
   or override the SSH command with `PI_SSH`.
+
+## Claude Code skills
+
+Project skills in `.claude/skills/` (DEV #7) wrap `scripts/dev.sh`: `/build [host|rpi|coverage]`,
+`/verify [--coverage]` and `/build-verify [--coverage]`. Claude also picks them
+automatically for build/test requests. Each runs in a forked Haiku subagent
+(`context: fork`, `model: haiku`) and returns only the summary to the main conversation.
 
 ## Claude Code hooks
 
