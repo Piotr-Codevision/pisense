@@ -26,10 +26,12 @@ include(GoogleTest)
 
 add_executable(pisense_unit_tests
     unit/sanity_test.cpp
+    unit/version_test.cpp
 )
-target_include_directories(pisense_unit_tests PRIVATE ${PROJECT_SOURCE_DIR}/inc)
 target_link_libraries(pisense_unit_tests PRIVATE
+    pisense_core
     pisense_warnings
+    pisense_coverage
     GTest::gtest_main
     GTest::gmock
 )
