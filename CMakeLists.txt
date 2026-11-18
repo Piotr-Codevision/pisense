@@ -35,9 +35,43 @@ endfunction()
 add_library(pisense_warnings INTERFACE)
 target_compile_options(pisense_warnings INTERFACE -Wall -Wextra -Wpedantic)
 
+# Code coverage (DEV #6): clang source-based coverage for host builds.
+option(PISENSE_ENABLE_COVERAGE "Instrument project targets for code coverage" OFF)
+add_library(pisense_coverage INTERFACE)
+
+if(PISENSE_ENABLE_COVERAGE)
+    if(CMAKE_CROSSCOMPILING)
+        message(FATAL_ERROR "PISENSE_ENABLE_COVERAGE is supported for host builds only")
+    endif()
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "PISENSE_ENABLE_COVERAGE requires clang (DEV #2)")
+    endif()
+    target_compile_options(pisense_coverage INTERFACE
+        -fprofile-instr-generate -fcoverage-mapping)
+    target_link_options(pisense_coverage INTERFACE -fprofile-instr-generate)
+
+    # llvm-profdata/llvm-cov must match the compiler's LLVM version.
+    string(REGEX MATCH "^[0-9]+" _clang_major "${CMAKE_CXX_COMPILER_VERSION}")
+    get_filename_component(_clang_dir "${CMAKE_CXX_COMPILER}" REALPATH)
+    get_filename_component(_clang_dir "${_clang_dir}" DIRECTORY)
+    find_program(LLVM_PROFDATA_EXE NAMES llvm-profdata-${_clang_major} llvm-profdata
+        HINTS ${_clang_dir})
+    find_program(LLVM_COV_EXE NAMES llvm-cov-${_clang_major} llvm-cov
+        HINTS ${_clang_dir})
+    if(NOT LLVM_PROFDATA_EXE OR NOT LLVM_COV_EXE)
+        message(FATAL_ERROR "Coverage needs llvm-profdata and llvm-cov (LLVM ${_clang_major})")
+    endif()
+endif()
+
+# Project code; linked by the application and the unit tests.
+add_library(pisense_core STATIC src/version.cpp)
+target_include_directories(pisense_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+target_compile_definitions(pisense_core PRIVATE PISENSE_VERSION="${PROJECT_VERSION}")
+target_link_libraries(pisense_core PRIVATE pisense_warnings pisense_coverage)
+pisense_enable_clang_tidy(pisense_core)
+
 add_executable(pisense src/main.cpp)
-target_include_directories(pisense PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
-target_link_libraries(pisense PRIVATE pisense_warnings)
+target_link_libraries(pisense PRIVATE pisense_core pisense_warnings)
 pisense_enable_clang_tidy(pisense)
 
 # Host-based unit tests (DEV #3). Disabled by default when cross-compiling;
@@ -52,6 +86,27 @@ option(PISENSE_BUILD_TESTS "Build host-based unit tests" ${_pisense_tests_defaul
 if(PISENSE_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+if(PISENSE_ENABLE_COVERAGE)
+    if(NOT PISENSE_BUILD_TESTS)
+        message(FATAL_ERROR "PISENSE_ENABLE_COVERAGE requires PISENSE_BUILD_TESTS=ON")
+    endif()
+    # Run the unit tests and report coverage of project code (tests and third-party
+    # code are excluded).
+    add_custom_target(coverage
+        COMMAND ${CMAKE_COMMAND}
+            -DLLVM_PROFDATA=${LLVM_PROFDATA_EXE}
+            -DLLVM_COV=${LLVM_COV_EXE}
+            -DCTEST=${CMAKE_CTEST_COMMAND}
+            -DBUILD_DIR=${CMAKE_BINARY_DIR}
+            -DOUTPUT_DIR=${CMAKE_BINARY_DIR}/coverage
+            -DOBJECTS=$<TARGET_FILE:pisense_unit_tests>
+            "-DIGNORE_REGEX=(/tests/|/_deps/|^/usr/)"
+            -P ${PROJECT_SOURCE_DIR}/cmake/coverage-report.cmake
+        DEPENDS pisense_unit_tests
+        COMMENT "Running unit tests with code coverage"
+        VERBATIM)
 endif()
 
 # Code formatting (DEV #4). Optional targets, enabled only if clang-format is found.

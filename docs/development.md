@@ -70,16 +70,42 @@ This document describes the development toolchain, environment and related decis
   - Findings are warnings, not errors, for now; this may be tightened once the codebase
     grows.
 
+### DEV #6: Measure code coverage with clang source-based coverage
+- **Decision:** Host unit tests can be built with clang source-based coverage
+  (`-fprofile-instr-generate -fcoverage-mapping`). The `coverage` target runs the tests,
+  merges the profiles with `llvm-profdata` and reports with `llvm-cov`: a console
+  summary, an HTML report and an lcov file.
+- **Rationale:** Part of the clang toolchain (DEV #2), so no additional dependency.
+  Precise line, function, region and branch metrics taken from the compiler's AST,
+  better than gcov-style instrumentation with clang. The lcov export works with most CI
+  and coverage services; gcovr can convert it if Cobertura XML is ever needed.
+  Alternatives considered: `--coverage` + gcovr, `--coverage` + lcov/genhtml.
+- **Scope:**
+  - Measured: project code in `src/` and `inc/`. Product code is built as the
+    `pisense_core` library, linked by both the `pisense` executable and the unit tests,
+    so the tests exercise the same code as the application. `src/main.cpp` stays thin and
+    is not measured.
+  - Excluded: test code (`tests/`), third-party code (`_deps/`) and system headers.
+  - Enabled by `PISENSE_ENABLE_COVERAGE=ON` (default OFF) in a separate build
+    directory; host builds with clang only (configure fails otherwise). Instrumentation
+    flags come from the `pisense_coverage` INTERFACE target, linked by project targets
+    only.
+  - `llvm-profdata`/`llvm-cov` must match the clang version; versioned names
+    (e.g. `llvm-cov-21`) are preferred.
+- **Thresholds:** none for now (report only, MVP). A minimum (e.g. line coverage) may
+  be enforced later.
+
 ## Environment
 
-| Component    | Required | Tested locally |
-|--------------|----------|----------------|
-| OS (host)    | Linux    | Ubuntu (WSL2)  |
-| CMake        | >= 3.16  | 4.2.3          |
-| clang        | >= 14    | 21.1.8         |
-| clang-format | >= 14    | 21.1.8         |
-| clang-tidy   | >= 14    | 21.1.8         |
-| lld          | >= 14    | 18.1.8         |
+| Component                | Required      | Tested locally |
+|--------------------------|---------------|----------------|
+| OS (host)                | Linux         | Ubuntu (WSL2)  |
+| CMake                    | >= 3.16       | 4.2.3          |
+| clang                    | >= 14         | 21.1.8         |
+| clang-format             | >= 14         | 21.1.8         |
+| clang-tidy               | >= 14         | 21.1.8         |
+| lld                      | >= 14         | 18.1.8         |
+| llvm-cov / llvm-profdata | same as clang | 21.1.8         |
 
 ### Target (Raspberry Pi Zero W, checked 2026-11-17)
 
@@ -118,6 +144,19 @@ cmake --build build
 - Offline: install GoogleTest (e.g. `libgtest-dev` / `googletest` package providing
   `GTestConfig.cmake`), or point CMake at a pre-downloaded source tree with
   `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=<path>`.
+
+## Code coverage (host)
+
+```sh
+cmake -S . -B build-coverage -DCMAKE_CXX_COMPILER=clang++ -DPISENSE_ENABLE_COVERAGE=ON
+cmake --build build-coverage --target coverage
+```
+
+- The console shows a per-file summary (regions, functions, lines, branches).
+- HTML report: `build-coverage/coverage/html/index.html`.
+- lcov file (for CI/IDE plugins): `build-coverage/coverage/coverage.lcov`.
+- Each run starts from a clean `build-coverage/coverage/` directory. Failing tests do not
+  stop the report; a warning is printed instead.
 
 ## Code formatting
 
