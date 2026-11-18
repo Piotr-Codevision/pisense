@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
 # Repeatable build and verification procedures with compact output (DEV #7).
 #
-# Usage:
-#   scripts/dev.sh build [host|rpi|coverage]   configure + build (default: host)
-#   scripts/dev.sh verify [--coverage]         tests, format-check, tidy on the host build
-#   scripts/dev.sh build-verify [--coverage]   build host, then verify
-#
 # Output contract (stable, meant to be read by people and by Claude skills):
-#   [PASS|FAIL] <step> (<secs>s)       one line per step
-#   <= 40 relevant lines + log path    only for a failed step
+#   [PASS|FAIL] <step> (<secs>s)          one line per step
+#   <= 40 relevant lines + log path       only for a failed step (errors first, then warnings)
 #   RESULT: PASS | RESULT: FAIL (<step>)  last line; exit code 0 / 1 (2 = usage error)
 # Full logs: <build dir>/logs/<step>.log
 
@@ -20,10 +15,16 @@ RPI_DIR="$ROOT/build-rpi"
 COV_DIR="$ROOT/build-coverage"
 SYSROOT="${RPI_SYSROOT:-$HOME/rpi-sysroot}"
 MAX_LINES=40
-JUST_BUILT=0
+CONTEXT_LINES=4 # lines kept after each error match (CMake reasons, GoogleTest values)
+ERROR_RE='error|Error|FAILED|Failed|Failure'
 
 usage() {
-    sed -n '4,7p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    cat <<'EOF'
+Usage:
+  scripts/dev.sh build [host|rpi|coverage]   configure + build (default: host)
+  scripts/dev.sh verify [--coverage]         rebuild, tests, format-check, tidy on the host build
+  scripts/dev.sh build-verify [--coverage]   build host, then verify
+EOF
     exit 2
 }
 
@@ -32,6 +33,21 @@ fail() { # fail <step> <message>
     echo "  $2"
     echo "RESULT: FAIL ($1)"
     exit 1
+}
+
+# excerpt <log>: error lines with context first, then warnings, at most MAX_LINES in total;
+# the log tail if nothing matches.
+excerpt() {
+    local log="$1" errors warnings n
+    errors="$(grep -E -A "$CONTEXT_LINES" --no-group-separator "$ERROR_RE" "$log" |
+        head -n "$MAX_LINES")"
+    n=$(printf '%s' "$errors" | grep -c '' || true)
+    if ((n < MAX_LINES)); then
+        warnings="$(grep -E -A 2 --no-group-separator 'warning:' "$log" | head -n $((MAX_LINES - n)))"
+        errors="$(printf '%s\n%s' "$errors" "$warnings" | sed '/^$/d')"
+    fi
+    [[ -n $errors ]] || errors="$(tail -n "$MAX_LINES" "$log")"
+    printf '%s\n' "$errors"
 }
 
 # run_step <step> <log dir> <command...>: runs the command with output to a log file,
@@ -52,13 +68,23 @@ run_step() {
         return 0
     fi
     echo "[FAIL] $step (${secs}s)"
-    local excerpt
-    excerpt="$(grep -E 'error|warning:|FAILED|Failed|Error' "$log" | head -n "$MAX_LINES")"
-    [[ -n $excerpt ]] || excerpt="$(tail -n "$MAX_LINES" "$log")"
-    printf '%s\n' "$excerpt" | sed 's/^/  /'
+    excerpt "$log" | sed 's/^/  /'
     echo "  full log: ${log#"$ROOT"/}"
     echo "RESULT: FAIL ($step)"
     exit 1
+}
+
+# require_tool <step> <cache variable> <tool name>: fails clearly when CMake did not find
+# an optional tool, instead of reporting a missing target as a code problem.
+require_tool() {
+    local path
+    path="$(sed -n "s/^$2:FILEPATH=//p" "$HOST_DIR/CMakeCache.txt")"
+    [[ -n $path && $path != *-NOTFOUND ]] ||
+        fail "$1" "$3 not found by CMake; install it (see docs/development.md) and re-run: scripts/dev.sh build"
+}
+
+run_tests() {
+    cd "$HOST_DIR" && ctest --output-on-failure
 }
 
 build_host() {
@@ -68,6 +94,7 @@ build_host() {
 
 build_rpi() {
     [[ -d $SYSROOT ]] || fail sysroot "Sysroot '$SYSROOT' not found. Sync it from the Pi first: PI_HOST=pi@<pi-address> scripts/sync-sysroot.sh"
+    command -v file >/dev/null || fail arch-check "'file' utility not found; install it (package 'file')"
     run_step configure "$RPI_DIR/logs" cmake -S "$ROOT" -B "$RPI_DIR" \
         -DCMAKE_TOOLCHAIN_FILE="$ROOT/cmake/toolchain-rpi-zero.cmake" -DRPI_SYSROOT="$SYSROOT"
     run_step build "$RPI_DIR/logs" cmake --build "$RPI_DIR" -j "$(nproc)"
@@ -77,56 +104,68 @@ build_rpi() {
     echo "[PASS] arch-check (ARM ELF)"
 }
 
+# build_coverage [target]: configure the coverage tree and build all targets or one target.
 build_coverage() {
     run_step coverage-configure "$COV_DIR/logs" cmake -S "$ROOT" -B "$COV_DIR" \
         -DCMAKE_CXX_COMPILER=clang++ -DPISENSE_ENABLE_COVERAGE=ON
-    run_step coverage-build "$COV_DIR/logs" cmake --build "$COV_DIR" -j "$(nproc)"
+    run_step coverage-build "$COV_DIR/logs" cmake --build "$COV_DIR" -j "$(nproc)" \
+        ${1:+--target "$1"}
 }
 
+# verify <with_coverage> <skip_rebuild>
 verify() {
-    local with_coverage=0
-    case "${1:-}" in
-        "") ;;
-        --coverage) with_coverage=1 ;;
-        *) usage ;;
-    esac
     [[ -f $HOST_DIR/CMakeCache.txt ]] || fail verify "No host build in build/. Run: scripts/dev.sh build"
     # Incremental rebuild so tests never run against stale binaries (no-op when up to date).
-    [[ $JUST_BUILT -eq 1 ]] || run_step build "$HOST_DIR/logs" cmake --build "$HOST_DIR" -j "$(nproc)"
-    run_step test "$HOST_DIR/logs" bash -c "cd '$HOST_DIR' && ctest --output-on-failure"
+    [[ $2 -eq 1 ]] || run_step build "$HOST_DIR/logs" cmake --build "$HOST_DIR" -j "$(nproc)"
+    run_step test "$HOST_DIR/logs" run_tests
     grep -E 'tests passed' "$HOST_DIR/logs/test.log" | sed 's/^/  /'
+    require_tool format-check CLANG_FORMAT_EXE clang-format
     run_step format-check "$HOST_DIR/logs" cmake --build "$HOST_DIR" --target format-check
+    require_tool tidy CLANG_TIDY_EXE clang-tidy
     run_step tidy "$HOST_DIR/logs" cmake --build "$HOST_DIR" --target tidy
-    if [[ $with_coverage -eq 1 ]]; then
-        build_coverage
+    if [[ $1 -eq 1 ]]; then
+        build_coverage pisense_unit_tests
         run_step coverage "$COV_DIR/logs" cmake --build "$COV_DIR" --target coverage
         grep -E '^TOTAL' "$COV_DIR/logs/coverage.log" | tr -s ' ' | sed 's/^/  /'
         echo "  report: build-coverage/coverage/html/index.html"
     fi
 }
 
+# Validate all arguments before doing any work.
 cmd="${1:-}"
 [[ $# -gt 0 ]] && shift
+[[ $# -le 1 ]] || usage
+arg="${1:-}"
+with_coverage=0
 case "$cmd" in
     build)
-        [[ $# -le 1 ]] || usage
-        case "${1:-host}" in
-            host) build_host ;;
-            rpi) build_rpi ;;
-            coverage) build_coverage ;;
+        case "${arg:-host}" in
+            host | rpi | coverage) ;;
             *) usage ;;
         esac
         ;;
-    verify)
-        [[ $# -le 1 ]] || usage
-        verify "${1:-}"
-        ;;
-    build-verify)
-        [[ $# -le 1 ]] || usage
-        build_host
-        JUST_BUILT=1
-        verify "${1:-}"
+    verify | build-verify)
+        case "$arg" in
+            "") ;;
+            --coverage) with_coverage=1 ;;
+            *) usage ;;
+        esac
         ;;
     *) usage ;;
+esac
+
+case "$cmd" in
+    build)
+        case "${arg:-host}" in
+            host) build_host ;;
+            rpi) build_rpi ;;
+            coverage) build_coverage ;;
+        esac
+        ;;
+    verify) verify "$with_coverage" 0 ;;
+    build-verify)
+        build_host
+        verify "$with_coverage" 1
+        ;;
 esac
 echo "RESULT: PASS"

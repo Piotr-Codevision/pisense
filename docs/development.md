@@ -128,15 +128,16 @@ This document describes the development toolchain, environment and related decis
 
 ## Environment
 
-| Component                | Required      | Tested locally |
-|--------------------------|---------------|----------------|
-| OS (host)                | Linux         | Ubuntu (WSL2)  |
-| CMake                    | >= 3.16       | 4.2.3          |
-| clang                    | >= 14         | 21.1.8         |
-| clang-format             | >= 14         | 21.1.8         |
-| clang-tidy               | >= 14         | 21.1.8         |
-| lld                      | >= 14         | 18.1.8         |
-| llvm-cov / llvm-profdata | same as clang | 21.1.8         |
+| Component                     | Required      | Tested locally |
+|-------------------------------|---------------|----------------|
+| OS (host)                     | Linux         | Ubuntu (WSL2)  |
+| CMake                         | >= 3.16       | 4.2.3          |
+| clang                         | >= 14         | 21.1.8         |
+| clang-format                  | >= 14         | 21.1.8         |
+| clang-tidy                    | >= 14         | 21.1.8         |
+| lld                           | >= 14         | 18.1.8         |
+| llvm-cov / llvm-profdata      | same as clang | 21.1.8         |
+| file (for `dev.sh build rpi`) | any           | 5.46           |
 
 ### Target (Raspberry Pi Zero W, checked 2026-11-17)
 
@@ -167,7 +168,10 @@ scripts/dev.sh verify [--coverage]         # rebuild, ctest, format-check, tidy 
 scripts/dev.sh build-verify [--coverage]   # build host, then verify
 ```
 
-- `verify` needs an existing host build and fails on any clang-tidy finding.
+- `verify` needs an existing host build and fails on any clang-tidy finding; a missing
+  clang-format/clang-tidy is reported as such, not as a code failure.
+- The script owns `build/`, `build-rpi/` and `build-coverage/` and always configures them
+  with the documented options (e.g. clang++); use another directory for custom configs.
 - `build rpi` needs the sysroot (see below); it never syncs it or deploys.
 - The manual commands below remain valid; the script only wraps them.
 
