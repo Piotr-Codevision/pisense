@@ -1,5 +1,6 @@
-# Host build and unit tests for every pull request (DEV #9).
+# Host build, unit tests and clang-format check for every pull request (DEV #9).
 # The job name `build-and-test` is the required status check on `main`.
+# Actions are pinned to a commit SHA (a tag can be moved); the comment names the release.
 name: CI
 
 on:
@@ -24,7 +25,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install clang
         run: |
@@ -33,9 +34,23 @@ jobs:
           clang++ --version
           cmake --version
 
+      # Same clang-format release as locally: formatting differs between major versions,
+      # so the distribution's clang-format would report false failures. The runner image
+      # sets its own PIPX_BIN_DIR, so install into a known directory and pass the exact
+      # path to CMake (PATH may also contain an older clang-format).
+      - name: Install clang-format 21.1.8
+        env:
+          PIPX_BIN_DIR: ${{ runner.temp }}/pipx_bin
+        run: |
+          pipx install clang-format==21.1.8
+          "$PIPX_BIN_DIR/clang-format" --version
+          echo "CLANG_FORMAT_EXE=$PIPX_BIN_DIR/clang-format" >> "$GITHUB_ENV"
+
       # GoogleTest is fetched by CMake (pinned release with SHA256, see tests/CMakeLists.txt).
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++
+        run: >-
+          cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++
+          -DCLANG_FORMAT_EXE="$CLANG_FORMAT_EXE"
 
       - name: Build
         run: cmake --build build -j "$(nproc)"
@@ -43,3 +58,6 @@ jobs:
       - name: Unit tests
         working-directory: build
         run: ctest --output-on-failure
+
+      - name: Format check
+        run: cmake --build build --target format-check

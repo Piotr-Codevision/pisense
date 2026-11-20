@@ -162,7 +162,10 @@ This document describes the development toolchain, environment and related decis
   decides otherwise (a deliberate, visible bypass).
 - **Decision:** The workflow `.github/workflows/ci.yml` has one job, `build-and-test`
   (`ubuntu-24.04`, distribution clang): configure with `-DCMAKE_CXX_COMPILER=clang++`,
-  build all host targets, run `ctest --output-on-failure`. Branch protection on `main`
+  build all host targets, run `ctest --output-on-failure`, then the `format-check` target
+  with clang-format 21.1.8 (installed from PyPI with `pipx`; the distribution's older
+  clang-format formats differently and would report false failures). Actions are pinned to
+  a commit SHA, not a movable tag. Branch protection on `main`
   lists `build-and-test` as a required status check, with `enforce_admins: false`, so the
   owner can still merge with "Merge without waiting for requirements to be met" (GitHub
   records it). The workflow also runs on pushes to `main` (post-merge regression signal)
@@ -170,13 +173,17 @@ This document describes the development toolchain, environment and related decis
 - **Rationale:** A local `/build-verify` depends on discipline; CI makes the minimum bar
   (it compiles, the tests pass) objective and visible on the PR. Plain cmake/ctest steps
   show the full log in the Actions UI, whereas `scripts/dev.sh` keeps output in log files
-  and requires clang-format and clang-tidy, which are out of scope here.
-  Alternatives considered: `scripts/dev.sh build-verify` in CI (broader gate with format
-  and tidy, not requested; possible follow-up), repository rulesets with a bypass list
-  (equivalent, more setup for a single-owner repository), required reviews (a solo owner
+  and also runs clang-tidy (slow, and version-dependent findings). The format check is
+  cheap and closes the most common gap to the local `/build-verify`. Building with the
+  distribution's older clang also exercises the minimum compiler version (DEV #2); when CI
+  reports a warning not seen locally, check compiler versions first.
+  Alternatives considered: `scripts/dev.sh build-verify` in CI (would add clang-tidy and
+  shellcheck to the gate; possible follow-up), repository rulesets with a bypass list
+  (equivalent, more setup for a single-owner repository), checking only changed files
+  (the whole-tree check is fast at this size), required reviews (a solo owner
   cannot approve their own PR), requiring branches to be up to date (forces rebases).
-- **Scope:** Host build and unit tests only; not the Raspberry Pi cross-build, format or
-  tidy checks, coverage or hardware tests. The workflow token is read-only
+- **Scope:** Host build, unit tests and format check; not the Raspberry Pi cross-build,
+  clang-tidy, shellcheck, coverage or hardware tests. The workflow token is read-only
   (`permissions: contents: read`); superseded runs of the same PR are cancelled. PRs from
   first-time external contributors need approval before workflows run (GitHub default).
 
@@ -195,7 +202,8 @@ This document describes the development toolchain, environment and related decis
 | shellcheck (optional)         | any           | 0.11.0         |
 
 CI (DEV #9) runs on GitHub's `ubuntu-24.04` runner with the distribution clang and the
-runner's CMake; the job log prints both versions.
+runner's CMake (older than locally tested; the job log prints both versions) and
+clang-format 21.1.8 from PyPI.
 
 ### Target (Raspberry Pi Zero W, checked 2026-11-17)
 
@@ -263,8 +271,9 @@ cmake --build build
 `.github/workflows/ci.yml` (DEV #9) runs the job `build-and-test` on every pull request to
 `main` (opened, reopened, ready for review, new commits), on pushes to `main` and on manual
 dispatch (Actions tab, "Run workflow"). It runs the same commands as
-[Unit tests (host)](#unit-tests-host); results are on the PR's Checks tab or via
-`gh pr checks <number>`.
+[Unit tests (host)](#unit-tests-host), then the `format-check` target; results are on the
+PR's Checks tab or via `gh pr checks <number>`. A format failure is fixed locally with
+`cmake --build build --target format`.
 
 - `build-and-test` is a required status check on `main`: a red or missing check blocks the
   merge button.
