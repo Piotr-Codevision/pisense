@@ -1,0 +1,45 @@
+# Host build and unit tests for every pull request (DEV #9).
+# The job name `build-and-test` is the required status check on `main`.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: build-and-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang
+          clang++ --version
+          cmake --version
+
+      # GoogleTest is fetched by CMake (pinned release with SHA256, see tests/CMakeLists.txt).
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++
+
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+
+      - name: Unit tests
+        working-directory: build
+        run: ctest --output-on-failure

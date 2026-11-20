@@ -1,4 +1,7 @@
 # pisense
+
+[![CI](https://github.com/Piotr-Codevision/pisense/actions/workflows/ci.yml/badge.svg)](https://github.com/Piotr-Codevision/pisense/actions/workflows/ci.yml)
+
 A lightweight IoT environmental monitoring system built in modern C++ for Raspberry Pi.
 
 ## Build

@@ -155,6 +155,31 @@ This document describes the development toolchain, environment and related decis
 - **Scope:** GitHub remotes only; requires the GitHub CLI (`gh`) to be logged in. The
   attribution lines of commits and PRs are written by the session, not hard-coded.
 
+### DEV #9: Gate pull requests with a CI build and unit-test run (GitHub Actions)
+- **Requirement:** Every pull request targeting `main` is built and its host unit tests are
+  run automatically when it is opened, reopened, marked ready for review or updated with new
+  commits. A failing build or unit test is a no-go for merging, unless the repository owner
+  decides otherwise (a deliberate, visible bypass).
+- **Decision:** The workflow `.github/workflows/ci.yml` has one job, `build-and-test`
+  (`ubuntu-24.04`, distribution clang): configure with `-DCMAKE_CXX_COMPILER=clang++`,
+  build all host targets, run `ctest --output-on-failure`. Branch protection on `main`
+  lists `build-and-test` as a required status check, with `enforce_admins: false`, so the
+  owner can still merge with "Merge without waiting for requirements to be met" (GitHub
+  records it). The workflow also runs on pushes to `main` (post-merge regression signal)
+  and on manual dispatch.
+- **Rationale:** A local `/build-verify` depends on discipline; CI makes the minimum bar
+  (it compiles, the tests pass) objective and visible on the PR. Plain cmake/ctest steps
+  show the full log in the Actions UI, whereas `scripts/dev.sh` keeps output in log files
+  and requires clang-format and clang-tidy, which are out of scope here.
+  Alternatives considered: `scripts/dev.sh build-verify` in CI (broader gate with format
+  and tidy, not requested; possible follow-up), repository rulesets with a bypass list
+  (equivalent, more setup for a single-owner repository), required reviews (a solo owner
+  cannot approve their own PR), requiring branches to be up to date (forces rebases).
+- **Scope:** Host build and unit tests only; not the Raspberry Pi cross-build, format or
+  tidy checks, coverage or hardware tests. The workflow token is read-only
+  (`permissions: contents: read`); superseded runs of the same PR are cancelled. PRs from
+  first-time external contributors need approval before workflows run (GitHub default).
+
 ## Environment
 
 | Component                     | Required      | Tested locally |
@@ -168,6 +193,9 @@ This document describes the development toolchain, environment and related decis
 | llvm-cov / llvm-profdata      | same as clang | 21.1.8         |
 | file (for `dev.sh build rpi`) | any           | 5.46           |
 | shellcheck (optional)         | any           | 0.11.0         |
+
+CI (DEV #9) runs on GitHub's `ubuntu-24.04` runner with the distribution clang and the
+runner's CMake; the job log prints both versions.
 
 ### Target (Raspberry Pi Zero W, checked 2026-11-17)
 
@@ -229,6 +257,31 @@ cmake --build build
 - Offline: install GoogleTest (e.g. `libgtest-dev` / `googletest` package providing
   `GTestConfig.cmake`), or point CMake at a pre-downloaded source tree with
   `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=<path>`.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` (DEV #9) runs the job `build-and-test` on every pull request to
+`main` (opened, reopened, ready for review, new commits), on pushes to `main` and on manual
+dispatch (Actions tab, "Run workflow"). It runs the same commands as
+[Unit tests (host)](#unit-tests-host); results are on the PR's Checks tab or via
+`gh pr checks <number>`.
+
+- `build-and-test` is a required status check on `main`: a red or missing check blocks the
+  merge button.
+- Owner override: an admin can tick "Merge without waiting for requirements to be met"
+  (admins are not subject to the rule, `enforce_admins: false`). Use it only as a
+  deliberate decision; GitHub records the bypass.
+- Branch protection is a repository setting, not a file. To (re)apply it with the GitHub
+  CLI (repository resolved from the `origin` remote):
+
+  ```sh
+  gh api -X PUT 'repos/{owner}/{repo}/branches/main/protection' --input - <<'EOF'
+  {"required_status_checks": {"strict": false, "contexts": ["build-and-test"]},
+   "enforce_admins": false, "required_pull_request_reviews": null, "restrictions": null}
+  EOF
+  ```
+- Pushing changes to `.github/workflows/` over HTTPS needs a token with the `workflow`
+  scope: `gh auth refresh -h github.com -s workflow`.
 
 ## Code coverage (host)
 
