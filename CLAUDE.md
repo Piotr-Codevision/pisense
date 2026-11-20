@@ -23,6 +23,7 @@ PiSense is an educational IoT environmental monitoring project built in modern C
 ## Build and Verification
 - Use the project skills (wrapping `scripts/dev.sh`): `/build [host|rpi|coverage]`, `/verify [--coverage]`, `/build-verify [--coverage]`. Prefer them over ad-hoc cmake/ctest calls.
 - Run `/build-verify` before reporting work as done or committing; only a final line starting with `RESULT: PASS` counts as passing.
+- CI (DEV #9): PRs to `main` must pass the required check `build-and-test` (host build + unit tests); bypassing it is the owner's decision only.
 - Commands, toolchain versions and decisions: `docs/development.md`.
 - Deployment and sysroot sync reach the Raspberry Pi; run them only when asked.
 
